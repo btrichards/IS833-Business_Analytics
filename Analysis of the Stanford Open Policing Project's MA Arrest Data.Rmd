@@ -1,0 +1,330 @@
+---
+title: 'Analysis of Stanford Open Policing Project Bundle #1: Massachusetts'
+author: "Macey, Miller, Rackleff, Richards, Sah"
+output:
+  html_notebook: default
+  html_document: default
+---
+#Preparation
+```{r}
+LdLibs=function (){
+library(lattice)
+library(plyr)
+library(dbplyr)
+library(pROC)
+library(mc2d)
+library(rvest)
+library(eeptools)
+library(tidyr)
+library(textir)
+library(readr)
+library(class)
+print("lattice, plyr, dbplyr, pROC, mc2d, rvest, eeptools, tidyr, textir, readr, class have been loaded.")
+cat("\nBad boys, bad boys whatcha gonna do? \nWhatcha gonna do when they come for you? \n--Cops 2: RStudio--")
+}
+LdLibs()
+```
+
+```{r}
+MASSACHUSETTS <- read_csv("/Users/ben/Desktop/Data/MA.csv")
+troopers <- data.frame(MASSACHUSETTS)
+head(troopers)
+# View(troopers)
+```
+
+#SUPER CHUNK #1: the Cleaning
+##Item #1: 
+How much NAs are there and what percentage is it of the entire data?
+```{r}
+sapply(troopers, function(troopers) sum(is.na(troopers)))
+dim(troopers)
+```
+Total rows in original data set = 3418298
+```{r}
+for(i in 1:ncol(troopers)){
+print(sum(is.na(troopers[,i])) / nrow(troopers))
+}
+ncol(troopers)
+```
+
+any column with less than 5% NAs was deemed removeable without affecting larger data 
+```{r}
+# Because we are missing the same data for Location_raw, County_name, and county_fips, and even more data for Fine_grained_location, there is no way to work our way back to the missing 530 rows and they will need to be dealt with separately. For now, location_raw and fine_grained_location are removed because their data is summarized elsewhere. Similarly, search_type and search_type raw are missing data for the same stops and there is no way to work our way back to that information. 
+nrow(troopers)
+for(i in c(5:7)){
+troopers <- troopers[complete.cases(troopers[,i]),]
+}
+nrow(troopers)
+for(i in c(10:14)){
+troopers <- troopers[complete.cases(troopers[,i]),]
+}
+nrow(troopers)
+for(i in 21:23){
+ troopers <- troopers[complete.cases(troopers[,i]),]
+}
+sapply(troopers, function(troopers) sum(is.na(troopers)))
+dim(troopers)
+nrow(troopers) / nrow(MASSACHUSETTS)
+```
+Started with nrow = 3418298
+step 1 = 3411630
+step 2 =  3247771
+finally = 3246356
+final data set = 0.95% original
+
+Now to spackle out the other NAs
+```{r}
+troopers$fine_grained_location = ifelse(is.na(troopers$fine_grained_location)=="TRUE", "Route 0", troopers$fine_grained_location)
+troopers$violation = ifelse(is.na(troopers$violation)=="TRUE","Unknown", troopers$violation) 
+
+sum(is.na(troopers$fine_grained_location)=="TRUE")
+sum(is.na(troopers$violation)=="TRUE")
+```
+
+
+##Item #2:
+Seperating the grain from the chaff
+```{r}
+trprs <- separate(troopers, stop_date, sep="-", c("year", "month", "day"))
+trprs = separate(trprs, fine_grained_location, sep=" ", c("Road", "Rt.No"))
+str(trprs)
+sapply(trprs, function(trprs) sum(is.na(trprs)))
+```
+
+As stated earlier, we only want to look at year = 2012
+and there's more than 1 way to skin a cat
+```{r}
+length(unique(trprs$year))
+trprs.cat1 <- trprs[trprs$year == "2012", ]
+trprs.cat2 <- trprs[ which(trprs$year == "2012"),]
+length(unique(trprs.cat1$year))
+length(unique(trprs.cat2$year))
+```
+
+
+```{r}
+#remove columns that had a large amount of data missing prior to removing rows. Columns "Stop_time", "police_department", "search type raw" "search type", "Road" and "violation_raw" are missing all or mostly all  data for 2012. ID and State and Year are known.
+
+dim(trprs.cat2)
+trprs.cat2$id=NULL #not relevant
+trprs.cat2$state=NULL #we know its MA
+trprs.cat2$year=NULL # we know it's 2012
+trprs.cat2$stop_time=NULL
+trprs.cat2$Road=NULL
+trprs.cat2$police_department=NULL
+trprs.cat2$violation_raw=NULL
+trprs.cat2$search_type=NULL
+trprs.cat2$search_type_raw=NULL
+dim(trprs.cat2)
+names(trprs.cat2)
+```
+
+
+##Item #3:
+Create new baseline and clean the environment
+```{r}
+write_csv(trprs.cat2, "~/Desktop/Data/MA_2012.csv")
+```
+```{r}
+rm(MASSACHUSETTS)
+rm(troopers)
+rm(trprs)
+rm(trprs.cat1)
+rm(trprs.cat2)
+```
+Okay, we're ready to go!
+####END OF SUPER CHUNK #1: the Cleaning
+
+#SUPER CHUNK #2: the Analysis
+##Item #1:
+
+```{r}
+# Given the size of our dataset and the resources required to manipulate it, we decided to drill down on one State and one year (Massachusetts 2012) to identify any stories in the data. This would help us narrow down on key elements in the data and inform future analysis for other states and years, as well as comparisons across states and years.
+MASSACHUSETTS <- read_csv("/Users/ben/Desktop/Data/MA_2012.csv")
+t <- data.frame(MASSACHUSETTS)
+head(t)
+# The Question we are interested in exploring in this data is: which factors influence a stop outcome: civil, criminal, arrest, or warning. 
+```
+```{r}
+sapply(t, function(t) sum(is.na(t)))
+count(t$stop_outcome) # verifying were we stand with the data frame t
+names(t) # displays the column headers in order to know the column numbers for next function
+```
+```{r}
+str(t)
+```
+
+```{r}
+for(i in c(1,2,6)){
+t[,i] = as.integer(t[,i])
+}
+for(i in c(7,10:17)){
+t[,i] = as.factor(t[,i])
+}
+str(t)
+sapply(t, function(t) sum(is.na(t)))
+```
+Can't win them all I guess...
+
+```{r}
+t$Rt.No = ifelse(is.na(t$Rt.No)=="TRUE", 0, t$Rt.No)
+sum(is.na(t$Rt.No))
+t$Rt.No = as.integer(t$Rt.No)
+sum(is.na(t$Rt.No))
+```
+
+
+```{r}
+
+histogram(t$driver_race) # taking a look at demographic breakdowns in the data
+histogram(t$driver_age)
+histogram(t$driver_gender)
+```
+
+
+Based on this data, men are stopped much more frequently then women. Stop rates by race appear to roughly line up with national demographics. Stops by age are skewed to the right, indicating younger drivers are more likely to be stopped. 
+
+
+```{r}
+histogram(t$stop_outcome)
+histogram(t$violation)
+#and see likely outcomes for traffic stops. The majority are Civil and Warnings, with less than 10% resulting in criminal action or arrest. 
+```
+```{r}
+# barchart(t$day) # this keeps stalling but is worth running
+```
+There was no indication that the day of the month had any bearing on the number of stops.  Often we think that police pull over more peope at the end of the month to make quotas, however this does not show any preference towards day or part of month.
+
+
+```{r}
+ddply(t,.(driver_race),summarize, warning=mean(stop_outcome=="Warning"), arrest=mean(stop_outcome=="Arrest"), civil= mean(stop_outcome=="Civil"), criminal=mean(stop_outcome=="Criminal"), void=mean(stop_outcome=="Void"))
+
+```
+This chart indicates that of the people stopped, Asians receive a warning 32% of the time, Blacks 35% of the time, Hispanics 31% of the time, Other races 30% percent, unknonwn 13% and Whites 39%. Blacks and Hispanics are more likely to face criminal charges if they're stopped, with 10.5% of Blacks and 16% of Hispanics that are stopped receiving criminal charges, compared with only 4% amongst whites and asians. 
+```{r}
+ddply(t,.(driver_gender),summarize, warning=mean(stop_outcome=="Warning"), arrest=mean(stop_outcome=="Arrest"), civil= mean(stop_outcome=="Civil"), criminal=mean(stop_outcome=="Criminal"), void=mean(stop_outcome=="Void"))
+```
+This shows us that when women are stopped, they are more likely to receive a warning than men, at 41% compared to only 35%
+```{r}
+t$month=as.integer(t$month)
+t$day=as.integer(t$day)
+str(t)
+```
+
+##KNN
+let's see what nearest neighbors are to "is_arrested"
+```{r}
+badboys = data.frame(model.matrix(~t$month + t$county_fips + t$Rt.No + t$driver_gender + t$driver_age + t$driver_race + t$violation + t$search_conducted + t$contraband_found + t$stop_outcome + t$is_arrested)) 
+
+badboys=badboys[,-1]
+dim(badboys)
+names(badboys)
+```
+focusing in here on demographic, location, and stop data to see what best predicts the stop outcome
+
+```{r}
+bb <- badboys
+names(bb)
+test=sample(1:nrow(bb), nrow(bb)/2) 
+```
+
+```{r}
+set.seed(1)
+standardized.X=scale(bb[,-19]) 
+train.X=standardized.X[-test,]
+test.X=standardized.X[test,]
+train.Y=bb[-test,19]
+test.Y=bb[test,19]
+
+knn.pred=knn(train.X,test.X,train.Y,prob=TRUE, k=101)
+p=attributes(knn.pred)$prob
+
+p[knn.pred==0]=1-p[knn.pred==0]
+
+ro=roc(test.Y~p)
+plot(ro)
+auc(ro)
+```
+Area under the curve: 0.9993
+it seems unlikely that predictions would be this good. 
+
+##Stepwise
+```{r}
+null = lm(t.is_arrestedTRUE~1,bb[test,])
+full = lm(t.is_arrestedTRUE~. ,bb[test,])
+r2=step(null, scope=list(lowr=null, upper=full), direction="both",k=3.8)
+summary(r2)
+```
+makes sense for the "downstream" outcome correlating with is_arrested... let's try again
+```{r}
+bb2 <- data.frame(model.matrix(~t$month+t$day+t$county_name+t$Rt.No+t$driver_gender+t$driver_race+t$violation+t$is_arrested+t$out_of_state))
+bb2 = bb2[,-1]
+null = lm(t.is_arrestedTRUE~1,bb2[test,])
+full = lm(t.is_arrestedTRUE~.,bb2[test,])
+r2=step(null, scope=list(lowr=null, upper=full), direction="both",k=3.8)
+```
+```{r}
+summary(r2)
+```
+So to summerize, there is a correlation to being arrested: 
+if the officer pulls you over for an unspecified (Unknown) reason;
+you're Hispanic;
+Male;
+in Bristol or Essex County;
+and/or are Black.
+
+& there is a correlation to -not- being arrested if:
+you're in Suffolk County;
+from out of state; 
+in Hampshire County;
+on a low-end Rt. No (although since NAs were replaced with 0's, this could be inaccurate);
+are in Norfolk County;
+and/or your race is "Other."
+
+
+##LASSO regression:
+```{r}
+# cleaning the environment before a high-memory process
+rm(t) 
+rm(badboys)
+rm(bb)
+rm(MASSACHUSETTS)
+rm(standardized.X)
+rm(train.X)
+rm(test.X)
+rm(train.Y)
+rm(test.Y)
+
+library(glmnet)
+y=bb2$t.is_arrestedTRUE #binomial value, cor compare will not work, need to eval AUC for determine a good fit!
+x=model.matrix(t.is_arrestedTRUE~(.)^2,bb2)
+
+set.seed(1)
+ttrain=sample(1:nrow(x), nrow(x)/2) #half the data is the training data "/2"
+ttest=(-ttrain) #test data is everything else '-'
+grid=10^seq(10,-2, length =100) #what set of lambda to choose, start with a large number and go down to a lower number, start with 10 the 10th power and go down to 10 to -2 power
+
+m=glmnet(x[ttrain,],y[ttrain],alpha=1,lambda=grid)
+bestlam=cv.glmnet(x[ttrain,],y[ttrain],alpha=1)$lambda.min
+
+pred=predict(m,s=bestlam,newx=x[ttest,])
+cor(pred,y[ttest])^2
+```
+another not very great correlation! 
+```{r}
+summary(m)
+```
+
+```{r}
+m2=glmnet(x,y,alpha=1,lambda=grid)
+coef=predict(m2,type="coefficients",s=bestlam)[1:ncol(x),]
+coef[coef!=0]
+```
+To summerize, being arrested is correlated with: 
+if the officer pulls you over for an unspecified (Unknown) reason; 
+the driver is a Hispanic male;
+the driver is male and is pulled over for an unspecified (Unknown) reason; 
+and/or the driver is Hispanic and pulled over for an unspecified (Unknown) reason.
+
+####END OF SUPER CHUNK #2: the Analysis
+##Thanks for IS833!!! 
